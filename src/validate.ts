@@ -46,11 +46,33 @@ function validateQuery(rawQuery: unknown, at: string): QueryCondition[] {
 /**
  * 校验并规范化导入的规则 JSON。
  * 字段缺失时给出合理默认值，类型错误时抛出带位置信息的中文错误。
+ * id 按原顺序去重：首次出现的非空 id 原样保留，重复或缺失的 id 重新生成
+ * （不与原数据携带的 id 及已分配的 id 相撞），保证规则表内 id 唯一，
+ * 规则顺序与匹配字段不受影响。
  */
-export function validateRules(data: unknown): Rule[] {
+export function validateRules(data: unknown, genId: () => string = uid): Rule[] {
   if (!Array.isArray(data)) {
     throw new Error('JSON 顶层必须是规则数组');
   }
+  // 先收集原数据携带的全部非空 id：补发的新 id 除不能撞已分配的 id 外，
+  // 也不能撞原数据中尚未遍历到的 id，否则会抢占后续规则首次出现时应保留的 id
+  const incoming = new Set<string>();
+  for (const raw of data) {
+    if (isRecord(raw) && typeof raw.id === 'string' && raw.id !== '') {
+      incoming.add(raw.id);
+    }
+  }
+  const assigned = new Set<string>();
+  const resolveId = (rawId: unknown): string => {
+    if (typeof rawId === 'string' && rawId !== '' && !assigned.has(rawId)) {
+      assigned.add(rawId);
+      return rawId;
+    }
+    let id = genId();
+    while (assigned.has(id) || incoming.has(id)) id = genId();
+    assigned.add(id);
+    return id;
+  };
   return data.map((raw, i) => {
     const at = `第 ${i + 1} 条规则`;
     if (!isRecord(raw)) throw new Error(`${at}不是对象`);
@@ -94,7 +116,7 @@ export function validateRules(data: unknown): Rule[] {
     }
 
     return {
-      id: typeof raw.id === 'string' && raw.id !== '' ? raw.id : uid(),
+      id: resolveId(raw.id),
       name: typeof raw.name === 'string' && raw.name !== '' ? raw.name : `规则 ${i + 1}`,
       enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
       method: method as Rule['method'],

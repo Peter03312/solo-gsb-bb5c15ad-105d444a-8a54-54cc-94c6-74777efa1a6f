@@ -122,6 +122,31 @@ describe('saveStore / loadStore（信封往返与原子写入）', () => {
     const regression = loadStore(regressionStore, deps);
     expect(regression.value).toEqual(EMPTY_STORE);
   });
+
+  it('本地规则恢复时重复 id 按原顺序去重，保存并再次加载后身份稳定', () => {
+    const stored = [
+      { ...RULE, id: 'dup', name: '第一条' },
+      { ...RULE, id: 'dup', name: '第二条' },
+      { ...RULE, id: 'other', name: '第三条' },
+    ];
+    const deps = testDeps({
+      [rulesStore.key]: JSON.stringify(envelope(1, stored)),
+    });
+
+    const loaded = loadStore(rulesStore, deps);
+    expect(loaded.quarantined).toEqual([]);
+    expect(loaded.value.map((r) => r.name)).toEqual(['第一条', '第二条', '第三条']);
+    expect(loaded.value[0].id).toBe('dup');
+    expect(loaded.value[2].id).toBe('other');
+    const ids = loaded.value.map((r) => r.id);
+    expect(new Set(ids).size).toBe(3);
+
+    // 保存去重后的规则表并模拟刷新重载：id 不再变化
+    const saved = saveStore(rulesStore, loaded.value, deps);
+    expect(saved.ok).toBe(true);
+    const reloaded = loadStore(rulesStore, deps);
+    expect(reloaded.value.map((r) => r.id)).toEqual(ids);
+  });
 });
 
 // ---------- 迁移链 ----------

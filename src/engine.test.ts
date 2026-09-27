@@ -478,6 +478,57 @@ describe('validateRules', () => {
     ).toThrow('第 2 条规则的查询条件存在重复参数名「env」');
   });
 
+  it('重复或缺失的 id 按原顺序重新分配，首次出现的非空 id 保留', () => {
+    const rules = validateRules([
+      { id: 'a', host: '1.com', action: { target: '/1' } },
+      { id: 'a', host: '2.com', action: { target: '/2' } },
+      { host: '3.com', action: { target: '/3' } },
+      { id: '', host: '4.com', action: { target: '/4' } },
+      { id: 'a', host: '5.com', action: { target: '/5' } },
+    ]);
+    expect(rules[0].id).toBe('a');
+    const ids = rules.map((r) => r.id);
+    expect(ids.every((id) => id !== '')).toBe(true);
+    expect(new Set(ids).size).toBe(rules.length);
+    // 重新分配的 id 不与原数据携带的 id 相撞
+    expect(ids.slice(1)).not.toContain('a');
+    // 规则顺序与匹配字段保持不变
+    expect(rules.map((r) => r.host)).toEqual([
+      '1.com',
+      '2.com',
+      '3.com',
+      '4.com',
+      '5.com',
+    ]);
+    expect(rules.map((r) => r.action.target)).toEqual(['/1', '/2', '/3', '/4', '/5']);
+  });
+
+  it('补发的 id 不与原数据及已分配 id 相撞（确定性生成器）', () => {
+    // 生成器依次吐出：原数据中存在的 id、已分配的 id、干净的新 id
+    const seq = ['b', 'a', 'fresh'];
+    const rules = validateRules(
+      [
+        { id: 'a', host: '1.com', action: { target: '/1' } },
+        { id: 'a', host: '2.com', action: { target: '/2' } },
+        { id: 'b', host: '3.com', action: { target: '/3' } },
+      ],
+      () => seq.shift() ?? 'extra',
+    );
+    // 第 2 条撞 'a' 需补发：跳过 'b'（原数据携带）与 'a'（已分配）后取 'fresh'；
+    // 第 3 条的 'b' 是首次出现，原样保留
+    expect(rules.map((r) => r.id)).toEqual(['a', 'fresh', 'b']);
+  });
+
+  it('校验幂等：再次校验同一规则表时 id 保持稳定', () => {
+    const once = validateRules([
+      { id: 'x', host: '1.com', action: { target: '/1' } },
+      { id: 'x', host: '2.com', action: { target: '/2' } },
+      { host: '3.com', action: { target: '/3' } },
+    ]);
+    const twice = validateRules(once);
+    expect(twice.map((r) => r.id)).toEqual(once.map((r) => r.id));
+  });
+
   it('拒绝非法输入', () => {
     expect(() => validateRules({})).toThrow('数组');
     expect(() => validateRules([{ method: 'FOO' }])).toThrow('method');
