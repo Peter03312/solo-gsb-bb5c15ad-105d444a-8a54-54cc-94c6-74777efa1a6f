@@ -147,6 +147,36 @@ describe('迁移链（历史无版本数据与多跳升级）', () => {
     expect(loadStore(rulesStore, deps).migratedFrom).toEqual([]);
   });
 
+  it('本地恢复的规则携带重复 id 时在校验入口按序去重，保存并再次加载身份稳定', () => {
+    const dupRules = [
+      { id: 'dup', name: '第一条', host: 'a.com', action: { target: '/x' } },
+      { id: 'dup', name: '第二条', host: 'b.com', action: { target: '/y' } },
+      { name: '第三条', host: 'c.com', action: { target: '/z' } },
+    ];
+    const deps = testDeps({
+      [rulesStore.key]: JSON.stringify(envelope(1, dupRules)),
+    });
+
+    // 1) 浏览器本地恢复：重复 / 缺失 id 在校验入口即被修复
+    const first = loadStore(rulesStore, deps);
+    expect(first.migratedFrom).toEqual([]);
+    expect(first.quarantined).toEqual([]);
+    const firstIds = first.value.map((r) => r.id);
+    expect(new Set(firstIds).size).toBe(3);
+    expect(firstIds[0]).toBe('dup');
+    expect(firstIds[1]).not.toBe('dup');
+    expect(firstIds[2]).not.toBe('dup');
+    expect(firstIds[2]).not.toBe(firstIds[1]);
+    expect(first.value.map((r) => r.name)).toEqual(['第一条', '第二条', '第三条']);
+
+    // 2) 保存（校验规范化后的结果落盘）后刷新：身份保持稳定
+    const saveRes = saveStore(rulesStore, first.value, deps);
+    expect(saveRes.ok).toBe(true);
+    const second = loadStore(rulesStore, deps);
+    expect(second.value.map((r) => r.id)).toEqual(firstIds);
+    expect(new Set(second.value.map((r) => r.id)).size).toBe(3);
+  });
+
   it('回归存储 v0 无版本对象 {baseline, cases} 纳入信封，业务数据原样保留', () => {
     const legacy = {
       baseline: null,

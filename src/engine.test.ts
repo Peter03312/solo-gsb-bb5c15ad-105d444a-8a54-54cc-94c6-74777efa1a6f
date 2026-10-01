@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   MAX_STEPS,
   matchHost,
@@ -487,5 +487,93 @@ describe('validateRules', () => {
     expect(() =>
       validateRules([{ action: { type: 'redirect', target: '/x', status: 200 } }]),
     ).toThrow('status');
+  });
+
+  it('重复 id 时保留首次出现的原值，后续冲突分配新的唯一 id', () => {
+    const rules = validateRules([
+      {
+        id: 'dup',
+        name: '第一条',
+        method: 'GET',
+        host: 'a.com',
+        pathTemplate: '/a',
+        action: { type: 'rewrite', target: '/x' },
+      },
+      {
+        id: 'dup',
+        name: '第二条',
+        method: 'POST',
+        host: 'b.com',
+        pathTemplate: '/b',
+        action: { type: 'rewrite', target: '/y' },
+      },
+      {
+        id: 'dup',
+        name: '第三条',
+        method: 'PUT',
+        host: 'c.com',
+        pathTemplate: '/c',
+        action: { type: 'stop', target: '' },
+      },
+    ]);
+    const ids = rules.map((r) => r.id);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids[0]).toBe('dup');
+    expect(ids[1]).not.toBe('dup');
+    expect(ids[2]).not.toBe('dup');
+    expect(ids[2]).not.toBe(ids[1]);
+    // 顺序与匹配字段保持不变
+    expect(rules.map((r) => r.name)).toEqual(['第一条', '第二条', '第三条']);
+    expect(rules.map((r) => r.host)).toEqual(['a.com', 'b.com', 'c.com']);
+    expect(rules.map((r) => r.method)).toEqual(['GET', 'POST', 'PUT']);
+    expect(rules.map((r) => r.pathTemplate)).toEqual(['/a', '/b', '/c']);
+  });
+
+  it('空 / 缺失 / 非字符串 id 生成唯一值，且不与任何原始 id 相撞', () => {
+    const rules = validateRules([
+      { id: '', host: 'a.com', action: { target: '/x' } },
+      { host: 'b.com', action: { target: '/x' } },
+      { id: 123, host: 'c.com', action: { target: '/x' } },
+      { id: null, host: 'd.com', action: { target: '/x' } },
+      { id: 'keep', host: 'e.com', action: { target: '/x' } },
+    ]);
+    const ids = rules.map((r) => r.id);
+    expect(new Set(ids).size).toBe(5);
+    for (const id of ids.slice(0, 4)) {
+      expect(typeof id).toBe('string');
+      expect(id).not.toBe('');
+      expect(id).not.toBe('keep');
+    }
+    expect(ids[4]).toBe('keep');
+  });
+
+  it('新生成的 id 不会占用出现在更靠后位置的原始 id', () => {
+    // 第一条无 id；若生成器只看已分配值，恰好生成 'later' 就会吞掉后一条的原值
+    const originalUid = crypto.randomUUID.bind(crypto);
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('later' as ReturnType<typeof crypto.randomUUID>)
+      .mockImplementation(originalUid);
+    try {
+      const rules = validateRules([
+        { host: 'a.com', action: { target: '/x' } },
+        { id: 'later', host: 'b.com', action: { target: '/x' } },
+      ]);
+      expect(rules[1].id).toBe('later');
+      expect(rules[0].id).not.toBe('later');
+      expect(rules[0].id).not.toBe(rules[1].id);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('重复校验幂等：导入结果再次经 validateRules（保存 / 刷新恢复）身份保持稳定', () => {
+    const imported = validateRules([
+      { id: 'dup', host: 'a.com', action: { target: '/x' } },
+      { id: 'dup', host: 'b.com', action: { target: '/x' } },
+      { host: 'c.com', action: { target: '/x' } },
+    ]);
+    const revalidated = validateRules(imported);
+    expect(revalidated.map((r) => r.id)).toEqual(imported.map((r) => r.id));
+    expect(new Set(revalidated.map((r) => r.id)).size).toBe(3);
   });
 });

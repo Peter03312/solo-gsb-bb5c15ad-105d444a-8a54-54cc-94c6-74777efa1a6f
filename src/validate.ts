@@ -44,13 +44,57 @@ function validateQuery(rawQuery: unknown, at: string): QueryCondition[] {
 }
 
 /**
+ * 判断原始规则上是否带可保留的 id：非空字符串即视为有效（与历史行为一致，
+ * 纯空白字符串也按原值保留）。
+ */
+function originalIdOf(raw: unknown): string | null {
+  return isRecord(raw) && typeof raw.id === 'string' && raw.id !== ''
+    ? raw.id
+    : null;
+}
+
+/**
+ * 按原顺序为整批规则分配**互不相同**的 id：
+ * - 首次出现的非空 id 原样保留；
+ * - 空 / 缺失 / 非字符串 id，以及与先前已保留 id 冲突的重复 id，重新生成；
+ * - 新生成的值既不能与输入数据里出现过的任何原始 id 相撞（即使该原始 id
+ *   出现在更靠后的位置），也不能与本次已经分配的值相撞。
+ *
+ * 只调整身份字段，不改变规则顺序与任何匹配字段。
+ */
+export function assignUniqueIds(rawRules: readonly unknown[]): string[] {
+  const originalIds = new Set<string>();
+  for (const raw of rawRules) {
+    const originalId = originalIdOf(raw);
+    if (originalId !== null) originalIds.add(originalId);
+  }
+  const assigned = new Set<string>();
+  return rawRules.map((raw) => {
+    const originalId = originalIdOf(raw);
+    if (originalId !== null && !assigned.has(originalId)) {
+      assigned.add(originalId);
+      return originalId;
+    }
+    let next: string;
+    do {
+      next = uid();
+    } while (originalIds.has(next) || assigned.has(next));
+    assigned.add(next);
+    return next;
+  });
+}
+
+/**
  * 校验并规范化导入的规则 JSON。
  * 字段缺失时给出合理默认值，类型错误时抛出带位置信息的中文错误。
+ * id 在字段校验前统一经 {@link assignUniqueIds} 去重：重复或空 id 会按原顺序
+ * 重新分配，保证导入后每条规则身份唯一（断点、覆盖统计、卡片复用都以 id 为键）。
  */
 export function validateRules(data: unknown): Rule[] {
   if (!Array.isArray(data)) {
     throw new Error('JSON 顶层必须是规则数组');
   }
+  const ids = assignUniqueIds(data);
   return data.map((raw, i) => {
     const at = `第 ${i + 1} 条规则`;
     if (!isRecord(raw)) throw new Error(`${at}不是对象`);
@@ -94,7 +138,7 @@ export function validateRules(data: unknown): Rule[] {
     }
 
     return {
-      id: typeof raw.id === 'string' && raw.id !== '' ? raw.id : uid(),
+      id: ids[i],
       name: typeof raw.name === 'string' && raw.name !== '' ? raw.name : `规则 ${i + 1}`,
       enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
       method: method as Rule['method'],
